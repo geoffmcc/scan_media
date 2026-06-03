@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# scan_transcode.sh — Scan media libraries with ffprobe and generate HTML/CSV
+#                     reports identifying which files need transcoding for
+#                     DLNA/Jellyfin playback on a Samsung NU6900 TV
+#
+# Planned with help by Geoffrey McClinsey, built by OpenCode
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────

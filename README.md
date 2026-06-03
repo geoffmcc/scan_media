@@ -101,4 +101,6 @@ A `case` statement on `$FORMAT` calls the appropriate generation functions:
 - Results are written to a temp file, sorted, and then emitted — no interleaving from parallel workers
 - `--verbose` prints each file's relative path as `xargs` dispatches it, useful for debugging slow or skipped scans
 - Unreadable files (corrupt, permission-denied, etc.) are tracked in a separate temp file and reported in a Skipped Files section rather than aborting the entire scan. Each entry includes the `ffprobe` error message (e.g., `Invalid data found when processing input`) to help diagnose the issue.
-- `--output` intelligently strips `.csv`/`.html` extensions so old habits don't cause doubled extensions
+ - `--output` intelligently strips `.csv`/`.html` extensions so old habits don't cause doubled extensions
+
+Planned with help by Geoffrey McClinsey, built by OpenCode
