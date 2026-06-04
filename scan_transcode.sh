@@ -99,7 +99,9 @@ CACHE_HITS=$(mktemp)
 FILE_LIST=$(mktemp)
 PROGRESS_FILE=$(mktemp)
 PROGRESS_DONE=$(mktemp)
-trap 'rm -f "$RESULTS" "$SKIPPED" "${CACHE_HITS:-}" "$FILE_LIST" "$PROGRESS_FILE" "$PROGRESS_DONE"' EXIT
+DIFF_RESULT=$(mktemp)
+OLD_SNAPSHOT="${cache_stem}.snapshot"
+trap 'rm -f "$RESULTS" "$SKIPPED" "${CACHE_HITS:-}" "$FILE_LIST" "$PROGRESS_FILE" "$PROGRESS_DONE" "$DIFF_RESULT"' EXIT
 
 # Dedup helper for reason strings
 _reason_unique() {
@@ -303,6 +305,60 @@ skipped=$(wc -l < "$SKIPPED" 2>/dev/null || echo 0)
   done < "$SKIPPED"
 } > "$CACHE"
 
+# ?????? Diff against previous run ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+if [[ -f "$OLD_SNAPSHOT" ]]; then
+  {
+    echo "=== Changes since last run ==="
+    changes=0
+    exec 3<"$OLD_SNAPSHOT"
+    exec 4< <(awk -F'|' '{print $6 "|" $1}' "$RESULTS" | sort -t'|' -k2)
+    read -r old_line <&3 || old_line=""
+    read -r new_line <&4 || new_line=""
+    while [[ -n "$old_line" || -n "$new_line" ]]; do
+      old_path="${old_line#*|}"
+      new_path="${new_line#*|}"
+      if [[ -z "$new_line" ]]; then
+        echo "  GONE: $old_path"
+        changes=1
+        read -r old_line <&3 || old_line=""
+      elif [[ -z "$old_line" ]]; then
+        new_verdict="${new_line%%|*}"
+        echo "  NEW: $new_verdict - $new_path"
+        changes=1
+        read -r new_line <&4 || new_line=""
+      elif [[ "$old_path" < "$new_path" ]]; then
+        echo "  GONE: $old_path"
+        changes=1
+        read -r old_line <&3 || old_line=""
+      elif [[ "$new_path" < "$old_path" ]]; then
+        new_verdict="${new_line%%|*}"
+        echo "  NEW: $new_verdict - $new_path"
+        changes=1
+        read -r new_line <&4 || new_line=""
+      else
+        old_verdict="${old_line%%|*}"
+        new_verdict="${new_line%%|*}"
+        if [[ "$old_verdict" != "$new_verdict" ]]; then
+          if [[ "$new_verdict" == "Direct Play" ]]; then
+            echo "  FIXED: $new_path"
+          else
+            echo "  CHANGED: $old_verdict -> $new_verdict - $new_path"
+          fi
+          changes=1
+        fi
+        read -r old_line <&3 || old_line=""
+        read -r new_line <&4 || new_line=""
+      fi
+    done
+    exec 3<&-
+    exec 4<&-
+    [[ $changes -eq 0 ]] && echo "  No changes detected."
+  } > "$DIFF_RESULT"
+fi
+
+# Write new snapshot
+awk -F'|' '{print $6 "|" $1}' "$RESULTS" | sort -t'|' -k2 > "$OLD_SNAPSHOT"
+
 csv_quote() {
   local s="$1"
   s="${s//\"/\"\"}"
@@ -455,6 +511,15 @@ generate_html() {
 
 # ?????? Console output ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 generate_console() {
+  # ANSI colors for terminal output
+  local green="" yellow="" red="" reset=""
+  if [[ -t 1 ]]; then
+    green="\\033[32m"
+    yellow="\\033[33m"
+    red="\\033[31m"
+    reset="\\033[0m"
+  fi
+
   # Auto-size columns based on data
   local w=()
   local headers=("File" "Container" "Video" "Audio" "Subtitles" "Verdict")
@@ -470,15 +535,23 @@ generate_console() {
   done < "$RESULTS"
   local trunc_limit=$((w[0] - 3))
   [[ trunc_limit -lt 0 ]] && trunc_limit=0
-  local fmt=""
+
+  # Format string for header (6 fields) and data rows (5 fields, verdict separate)
+  local fmt_full="" fmt_data=""
   for ((i=0; i<6; i++)); do
-    fmt+="%-${w[i]}s"
-    [[ $i -lt 5 ]] && fmt+=" "
+    fmt_full+="%-${w[i]}s"
+    [[ $i -lt 5 ]] && fmt_full+=" "
   done
-  fmt+="\n"
+  fmt_full+="\n"
+  for ((i=0; i<5; i++)); do
+    fmt_data+="%-${w[i]}s"
+    [[ $i -lt 4 ]] && fmt_data+=" "
+  done
+  fmt_data+=" "
+
   local total_width=$(( w[0] + w[1] + w[2] + w[3] + w[4] + w[5] + 5 ))
 
-  printf "$fmt" "${headers[@]}"
+  printf "$fmt_full" "${headers[@]}"
   printf "%*s\n" "$total_width" "" | tr ' ' '???'
 
   local hide_direct=false
@@ -492,7 +565,13 @@ generate_console() {
       display_path="???${display_path: -$trunc_limit}"
     fi
 
-    printf "$fmt" "$display_path" "$c" "$v" "$a" "$s" "$ver"
+    local ver_color=""
+    [[ "$ver" == "Direct Play" ]] && ver_color="$green"
+    [[ "$ver" == "Subtitle Issue" ]] && ver_color="$yellow"
+    [[ "$ver" == "Transcode Needed" ]] && ver_color="$red"
+
+    printf "$fmt_data" "$display_path" "$c" "$v" "$a" "$s"
+    printf "${ver_color}%-${w[5]}s${reset}\n" "$ver"
 
     if [[ -n "$reason" ]]; then
       while IFS=';' read -ra R; do
@@ -511,6 +590,11 @@ generate_console() {
   echo "Subtitle Issue:       $sub_issue"
   echo "Transcode Needed:     $transcode"
   echo "Skipped (unreadable): $skipped"
+
+  if [[ -s "$DIFF_RESULT" ]]; then
+    echo ""
+    cat "$DIFF_RESULT"
+  fi
 
   if [[ "$skipped" -gt 0 ]]; then
     echo ""
