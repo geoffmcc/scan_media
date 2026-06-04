@@ -50,7 +50,6 @@ Uses `find` with `-follow` (follow symlinks) to recursively locate all files mat
 
 `find` pipes null-terminated file paths to `xargs -0 -P`, which spawns up to N parallel workers. Each worker runs the `process_file` function on one file. This is the key performance feature — a large library is scanned in minutes rather than hours.
 
-A live progress counter is displayed on the terminal during processing, showing `Processed: N / M`.
 
 ### 3.5 Incremental Cache
 
@@ -108,7 +107,7 @@ A `case` statement on `$FORMAT` calls the appropriate generation functions:
 
 ## Design Notes
 
-- All temp files (RESULTS, SKIPPED, CACHE_HITS, FILE_LIST, PROGRESS_FILE, PROGRESS_DONE) are cleaned up on exit via `trap`
+- All temp files (RESULTS, SKIPPED, CACHE_HITS, FILE_LIST, DIFF_RESULT) are cleaned up on exit via `trap`
 - The `process_file` function is `export -f` so `xargs` can invoke it in child shells
 - `jq` is used over `grep`/`awk` for reliable JSON parsing with proper escaping
 - Results are written to a temp file, sorted, and then emitted — no interleaving from parallel workers
