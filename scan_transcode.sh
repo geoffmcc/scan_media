@@ -97,7 +97,9 @@ cache_stem="${OUTPUT_CSV%.csv}"
 CACHE="${cache_stem}.cache"
 CACHE_HITS=$(mktemp)
 FILE_LIST=$(mktemp)
-trap 'rm -f "$RESULTS" "$SKIPPED" "${CACHE_HITS:-}" "$FILE_LIST"' EXIT
+PROGRESS_FILE=$(mktemp)
+PROGRESS_DONE=$(mktemp)
+trap 'rm -f "$RESULTS" "$SKIPPED" "${CACHE_HITS:-}" "$FILE_LIST" "$PROGRESS_FILE" "$PROGRESS_DONE"' EXIT
 
 # Dedup helper for reason strings
 _reason_unique() {
@@ -201,7 +203,7 @@ process_file() {
 }
 
 export -f process_file _reason_unique
-export SCAN_DIR RESULTS CACHE_HITS SUPPORTED_CONTAINERS SUPPORTED_VIDEO TRANSCODE_AUDIO SUPPORTED_SUBS CHECK_SUBTITLES SKIPPED VERBOSE
+export SCAN_DIR RESULTS CACHE_HITS PROGRESS_FILE SUPPORTED_CONTAINERS SUPPORTED_VIDEO TRANSCODE_AUDIO SUPPORTED_SUBS CHECK_SUBTITLES SKIPPED VERBOSE
 
 # ?????? Scan ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 echo "Scanning: $SCAN_DIR"
@@ -238,6 +240,18 @@ echo "Files found: $file_count  (cached: $cached_count  to scan: $to_scan)"
 echo ""
 
 if [[ $to_scan -gt 0 ]]; then
+  # Background progress reporter
+  (
+    while [[ ! -f "$PROGRESS_DONE" ]]; do
+      cur=$(wc -l < "$PROGRESS_FILE" 2>/dev/null || echo 0)
+      printf "\r  Processed: %d / %d" "$cur" "$to_scan" >&2
+      sleep 1
+    done
+    cur=$(wc -l < "$PROGRESS_FILE" 2>/dev/null || echo 0)
+    printf "\r  Processed: %d / %d\n" "$cur" "$to_scan" >&2
+  ) &
+  progress_pid=$!
+
   if ! xargs -0 -P "$JOBS" -I {} bash -c '
     rel=$(realpath --relative-to="$SCAN_DIR" "$1" 2>/dev/null || printf "%s" "$1")
     grep -Fxq "$rel" "$CACHE_HITS" 2>/dev/null && exit 0
@@ -245,9 +259,13 @@ if [[ $to_scan -gt 0 ]]; then
       printf "  Processing: %s\n" "$rel" >&2
     fi
     process_file "$1" "$rel"
+    echo >> "$PROGRESS_FILE"
   ' _ {} 2>/dev/null < "$FILE_LIST"; then
     echo "Warning: some files could not be processed" >&2
   fi
+
+  touch "$PROGRESS_DONE"
+  wait "$progress_pid" 2>/dev/null || true
 else
   echo "All files up to date in cache."
   exit 0

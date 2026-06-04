@@ -1,6 +1,6 @@
 # scan_transcode.sh — How It Works
 
-Scans a media library directory, inspects every video file with `ffprobe`, and reports which files will require transcoding when played on a Samsung NU6900 TV via Jellyfin/DLNA. Outputs a console summary plus CSV and/or HTML reports.
+Scans a media library directory, inspects every video file with `ffprobe`, and reports which files will require transcoding when played on a Samsung NU6900 TV (and likely other Samsung models or TV brands) via Jellyfin/DLNA. Outputs a console summary plus CSV and/or HTML reports.
 
 ## Usage
 
@@ -50,6 +50,17 @@ Uses `find` with `-follow` (follow symlinks) to recursively locate all files mat
 
 `find` pipes null-terminated file paths to `xargs -0 -P`, which spawns up to N parallel workers. Each worker runs the `process_file` function on one file. This is the key performance feature — a large library is scanned in minutes rather than hours.
 
+A live progress counter is displayed on the terminal during processing, showing `Processed: N / M`.
+
+### 3.5 Incremental Cache
+
+Results are cached in a `.cache` file alongside the CSV report. Each entry stores the file's modification time (mtime) alongside its scan verdict. On subsequent runs:
+
+- Files whose mtime hasn't changed are pulled from the cache and skipped by workers
+- Files that previously errored (unreadable) are also cached so they aren't retried
+- When all files are up to date, the script exits immediately with no report regeneration
+- Delete the `.cache` file to force a full re-scan
+
 ### 4. Stream Inspection (`process_file`)
 
 For each file, `ffprobe` is called once with JSON output containing format info and all stream metadata. `jq` extracts and iterates over every stream:
@@ -62,7 +73,8 @@ For each file, `ffprobe` is called once with JSON output containing format info 
 ### 5. Verdict Logic
 
 - **Direct Play** — no issues found across all checked streams
-- **Transcode Needed** — at least one stream flagged. The specific reason is recorded (e.g., "Audio codec 'dts' not supported")
+- **Subtitle Issue** (only when `--check-subtitles`) — all flagged issues are subtitle-only, no codec problems
+- **Transcode Needed** — at least one codec stream flagged. The specific reason is recorded (e.g., "Audio codec 'dts' not supported")
 
 ### 6. Output
 
@@ -74,8 +86,8 @@ For each file, `ffprobe` is called once with JSON output containing format info 
 
 - Summary banner with total / direct play / transcode / skipped counts
 - Collapsible Skipped Files section (orange) listing unreadable files
-- Color-coded table rows (green = Direct Play, red = Transcode Needed)
-- Checkbox to toggle visibility of Direct Play rows (JS-powered)
+- Color-coded table rows (green = Direct Play, amber = Subtitle Issue, red = Transcode Needed)
+- Three independent JS-powered checkboxes to hide/show each verdict category
 - Reasons displayed as italic text below each file row
 - No external dependencies — CSS and JS are inline
 
@@ -95,7 +107,7 @@ A `case` statement on `$FORMAT` calls the appropriate generation functions:
 
 ## Design Notes
 
-- All temp files (RESULTS and SKIPPED) are cleaned up on exit via `trap`
+- All temp files (RESULTS, SKIPPED, CACHE_HITS, FILE_LIST, PROGRESS_FILE, PROGRESS_DONE) are cleaned up on exit via `trap`
 - The `process_file` function is `export -f` so `xargs` can invoke it in child shells
 - `jq` is used over `grep`/`awk` for reliable JSON parsing with proper escaping
 - Results are written to a temp file, sorted, and then emitted — no interleaving from parallel workers
