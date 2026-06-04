@@ -137,15 +137,7 @@ process_file() {
     verdict="Transcode Needed"
   fi
 
-  local stream_count
-  stream_count=$(jq '.streams | length' <<< "$json")
-
-  for ((i=0; i<stream_count; i++)); do
-    local codec_type codec_name codec_tag
-    codec_type=$(jq -r ".streams[$i].codec_type // \"unknown\"" <<< "$json")
-    codec_name=$(jq -r ".streams[$i].codec_name // \"unknown\"" <<< "$json" | tr '[:upper:]' '[:lower:]')
-    codec_tag=$(jq -r ".streams[$i].codec_tag_string // \"\"" <<< "$json" | tr '[:upper:]' '[:lower:]')
-
+  while IFS='|' read -r codec_type codec_name codec_tag; do
     case "$codec_type" in
       video)
         local vid_ok=false
@@ -159,20 +151,18 @@ process_file() {
         [[ ",$video_codecs," != *",$codec_name,"* ]] && video_codecs="${video_codecs:+$video_codecs,}$codec_name"
         ;;
       audio)
-        local aud_bad=false aud_name
+        local aud_bad=false
         for a in $TRANSCODE_AUDIO; do
           if [[ "$codec_name" == "$a" ]]; then
             aud_bad=true
             break
           fi
-          if grep -qiE 'dts(hd|:x|x)' <<< "$codec_tag"; then
-            aud_bad=true
-            break
-          fi
         done
+        if ! $aud_bad && [[ $codec_tag =~ dts(hd|:x|x) ]]; then
+          aud_bad=true
+        fi
         if $aud_bad; then
-          aud_name=$(jq -r ".streams[$i].codec_name // \"$codec_tag\"" <<< "$json")
-          _reason_unique "Audio codec '$aud_name' not supported" "${reasons[@]}" && reasons+=("Audio codec '$aud_name' not supported")
+          _reason_unique "Audio codec '$codec_name' not supported" "${reasons[@]}" && reasons+=("Audio codec '$codec_name' not supported")
           verdict="Transcode Needed"
         fi
         [[ ",$audio_codecs," != *",$codec_name,"* ]] && audio_codecs="${audio_codecs:+$audio_codecs,}$codec_name"
@@ -191,7 +181,7 @@ process_file() {
         fi
         ;;
     esac
-  done
+  done < <(jq -r '.streams[] | [.codec_type // "unknown", (.codec_name // .codec_tag_string // "unknown" | ascii_downcase), (.codec_tag_string // "" | ascii_downcase)] | join("|")' <<< "$json")
 
   local reason_str
   reason_str=$(IFS='; '; echo "${reasons[*]}")
@@ -199,7 +189,7 @@ process_file() {
 }
 
 export -f process_file _reason_unique
-export RESULTS SUPPORTED_CONTAINERS SUPPORTED_VIDEO TRANSCODE_AUDIO SUPPORTED_SUBS CHECK_SUBTITLES SKIPPED VERBOSE
+export SCAN_DIR RESULTS SUPPORTED_CONTAINERS SUPPORTED_VIDEO TRANSCODE_AUDIO SUPPORTED_SUBS CHECK_SUBTITLES SKIPPED VERBOSE
 
 # ?????? Scan ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 echo "Scanning: $SCAN_DIR"
@@ -213,13 +203,13 @@ echo ""
 
 if ! find "$SCAN_DIR" -follow -type f \( "${FIND_ARGS[@]:1}" \) -print0 2>/dev/null | \
   xargs -0 -P "$JOBS" -I {} bash -c '
-    rel=$(realpath --relative-to="'"$SCAN_DIR"'" "$1" 2>/dev/null || echo "$1")
-    if [[ "'"$VERBOSE"'" == "true" ]]; then
-      echo "  Processing: $rel"
+    rel=$(realpath --relative-to="$SCAN_DIR" "$1" 2>/dev/null || printf "%s" "$1")
+    if [ "$VERBOSE" = "true" ]; then
+      printf "  Processing: %s\n" "$rel" >&2
     fi
     process_file "$1" "$rel"
   ' _ {} 2>/dev/null; then
-  echo "Warning: some files could not be processed ??? they will appear in Skipped" >&2
+  echo "Warning: some files could not be processed" >&2
 fi
 
 total=$(wc -l < "$RESULTS")
@@ -227,14 +217,21 @@ transcode=$(grep -c "^.*|Transcode Needed" "$RESULTS" || true)
 direct=$((total - transcode))
 skipped=$(wc -l < "$SKIPPED" 2>/dev/null || echo 0)
 
+csv_quote() {
+  local s="$1"
+  s="${s//\"/\"\"}"
+  printf '"%s"' "$s"
+}
+
 # ?????? Generate CSV ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 generate_csv() {
   {
     echo "path,container,video_codec,audio_codec,subtitle_codec,verdict,reason"
-    sort -t'|' -k1 "$RESULTS" | while IFS='|' read -r p c v a s ver reason; do
-      printf '"%s","%s","%s","%s","%s","%s","%s"\n' \
-        "$p" "$c" "$v" "$a" "$s" "$ver" "$reason"
-    done
+    while IFS='|' read -r p c v a s ver reason; do
+      printf '%s,%s,%s,%s,%s,%s,%s\n' \
+        "$(csv_quote "$p")" "$(csv_quote "$c")" "$(csv_quote "$v")" \
+        "$(csv_quote "$a")" "$(csv_quote "$s")" "$(csv_quote "$ver")" "$(csv_quote "$reason")"
+    done < <(sort -t'|' -k1 "$RESULTS")
     if [[ "$skipped" -gt 0 ]]; then
       echo ""
       echo "# Skipped files: $skipped"
