@@ -59,6 +59,7 @@ Results are cached in a `.cache` file alongside the CSV report. Each entry store
 - Files whose mtime hasn't changed are pulled from the cache and skipped by workers
 - Files that previously errored (unreadable) are also cached so they aren't retried
 - When all files are up to date, the script exits immediately with no report regeneration
+- The cache includes a config header; if `--check-subtitles` is toggled, the cache is invalidated and a full re-scan runs
 - Delete the `.cache` file to force a full re-scan
 
 ### 4. Stream Inspection (`process_file`)
