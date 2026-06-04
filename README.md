@@ -66,15 +66,16 @@ Results are cached in a `.cache` file alongside the CSV report. Each entry store
 For each file, `ffprobe` is called once with JSON output containing format info and all stream metadata. `jq` extracts and iterates over every stream:
 
 - **Container**: compared against the supported container list
+- **Attached pictures**: streams where `disposition.attached_pic == 1` (embedded cover art, thumbnails) are excluded from the codec check so `png`/`jpeg` album art doesn't trigger false positives
 - **Video streams**: codec name checked against H.264, HEVC, MPEG-2, MPEG-4, VP8, VP9, MJPEG
-- **Audio streams**: codec name and tag string checked against the transcode blocklist: DTS, DTS-HD MA, DTS:X, Dolby TrueHD
+- **Audio streams**: codec name and tag string checked against the transcode blocklist: DTS, DTS-HD MA, DTS:X, Dolby TrueHD. Unlike container/video, **all** audio streams must be unsupported for the file to be flagged — if at least one compatible stream exists (e.g. AC3 alongside DTS), the file is considered Direct Play
 - **Subtitle streams** (only if `--check-subtitles`): codec name checked against SRT, `mov_text`, ASS, SSA, SMI, SUB, MicroDVD, TTXT, XML — anything else (PGS, VobSub) is flagged
 
 ### 5. Verdict Logic
 
 - **Direct Play** — no issues found across all checked streams
 - **Subtitle Issue** (only when `--check-subtitles`) — all flagged issues are subtitle-only, no codec problems
-- **Transcode Needed** — at least one codec stream flagged. The specific reason is recorded (e.g., "Audio codec 'dts' not supported")
+- **Transcode Needed** — container unsupported, video codec unsupported, or **all** audio streams are in the transcode blocklist. Each specific reason is recorded (e.g., "Audio codec 'dts' not supported")
 
 ### 6. Output
 

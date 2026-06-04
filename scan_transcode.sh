@@ -127,6 +127,7 @@ process_file() {
   container=$(jq -r '.format.format_name // "unknown"' <<< "$json")
 
   local video_codecs="" audio_codecs="" sub_codecs=""
+  local total_audio=0 unsupported_audio=0
   local verdict="Direct Play"
   local reasons=()
 
@@ -167,9 +168,10 @@ process_file() {
         if ! $aud_bad && [[ $codec_tag =~ dts(hd|:x|x) ]]; then
           aud_bad=true
         fi
+        total_audio=$((total_audio + 1))
         if $aud_bad; then
+          unsupported_audio=$((unsupported_audio + 1))
           _reason_unique "Audio codec '$codec_name' not supported" "${reasons[@]}" && reasons+=("Audio codec '$codec_name' not supported")
-          verdict="Transcode Needed"
         fi
         [[ ",$audio_codecs," != *",$codec_name,"* ]] && audio_codecs="${audio_codecs:+$audio_codecs,}$codec_name"
         ;;
@@ -187,7 +189,11 @@ process_file() {
         fi
         ;;
     esac
-  done < <(jq -r '.streams[] | [.codec_type // "unknown", (.codec_name // .codec_tag_string // "unknown" | ascii_downcase), (.codec_tag_string // "" | ascii_downcase)] | join("|")' <<< "$json")
+  done < <(jq -r '.streams[] | select(.disposition.attached_pic != 1) | [.codec_type // "unknown", (.codec_name // .codec_tag_string // "unknown" | ascii_downcase), (.codec_tag_string // "" | ascii_downcase)] | join("|")' <<< "$json")
+
+  if [[ $total_audio -gt 0 && $unsupported_audio -eq $total_audio ]]; then
+    verdict="Transcode Needed"
+  fi
 
   if [[ "$verdict" == "Transcode Needed" ]]; then
     local all_sub=true
