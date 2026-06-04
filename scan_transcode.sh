@@ -183,6 +183,14 @@ process_file() {
     esac
   done < <(jq -r '.streams[] | [.codec_type // "unknown", (.codec_name // .codec_tag_string // "unknown" | ascii_downcase), (.codec_tag_string // "" | ascii_downcase)] | join("|")' <<< "$json")
 
+  if [[ "$verdict" == "Transcode Needed" ]]; then
+    local all_sub=true
+    for r in "${reasons[@]}"; do
+      [[ "$r" == "Subtitle codec '"* ]] || { all_sub=false; break; }
+    done
+    [[ "$all_sub" == true ]] && verdict="Subtitle Issue"
+  fi
+
   local reason_str
   reason_str=$(IFS='; '; echo "${reasons[*]}")
   echo "$relpath|$container|$video_codecs|$audio_codecs|$sub_codecs|$verdict|$reason_str" >> "$RESULTS"
@@ -214,7 +222,8 @@ fi
 
 total=$(wc -l < "$RESULTS")
 transcode=$(grep -c "^.*|Transcode Needed" "$RESULTS" || true)
-direct=$((total - transcode))
+sub_issue=$(grep -c "^.*|Subtitle Issue" "$RESULTS" || true)
+direct=$((total - transcode - sub_issue))
 skipped=$(wc -l < "$SKIPPED" 2>/dev/null || echo 0)
 
 csv_quote() {
@@ -266,8 +275,9 @@ generate_html() {
     echo '           border-bottom: 1px solid #eee; }'
     echo '  th { background: #444; color: #fff; font-weight: 600; }'
     echo '  tr.direct-play { background: #e8f5e9; }'
+    echo '  tr.subtitle-issue { background: #fff3cd; }'
     echo '  tr.transcode { background: #ffebee; }'
-    echo '  tr.direct-play:hover, tr.transcode:hover { filter: brightness(0.97); }'
+    echo '  tr.direct-play:hover, tr.subtitle-issue:hover, tr.transcode:hover { filter: brightness(0.97); }'
     echo '  .reasons { font-style: italic; color: #888; font-size: 0.85em; }'
     echo '  .reasons-td { padding: 0 10px 6px 10px; }'
     echo '  .hidden { display: none; }'
@@ -278,6 +288,7 @@ generate_html() {
     echo "<div class=\"summary\">"
     echo "  <span>Scanned: <span class=\"num\">$total</span></span>"
     echo "  <span>Direct Play: <span class=\"num direct\">$direct</span></span>"
+    echo "  <span>Subtitle Issue: <span class=\"num\">$sub_issue</span></span>"
     echo "  <span>Transcode Needed: <span class=\"num transcode\">$transcode</span></span>"
     echo "</div>"
     if [[ "$skipped" -gt 0 ]]; then
@@ -291,7 +302,7 @@ generate_html() {
       echo "  </ul>"
       echo "</details>"
     fi
-    echo '<div><label><input type="checkbox" id="filterToggle" onchange="toggleFilter()"> Show only Transcode Needed</label></div>'
+    echo '<div><label><input type="checkbox" id="filterToggle" onchange="toggleFilter()"> Hide Direct Play rows</label></div>'
     echo '<table>'
     echo '<colgroup>'
     echo '  <col style="width: 1%"><!-- File: min-width, expand as needed -->'
@@ -309,6 +320,8 @@ generate_html() {
       local row_class
       if [[ "$ver" == "Direct Play" ]]; then
         row_class="direct-play"
+      elif [[ "$ver" == "Subtitle Issue" ]]; then
+        row_class="subtitle-issue"
       else
         row_class="transcode"
       fi
@@ -380,11 +393,11 @@ generate_console() {
   printf "$fmt" "${headers[@]}"
   printf "%*s\n" "$total_width" "" | tr ' ' '???'
 
-  local display_filter=""
-  $ONLY_TRANSCODE && display_filter="Transcode Needed"
+  local hide_direct=false
+  $ONLY_TRANSCODE && hide_direct=true
 
   while IFS='|' read -r p c v a s ver reason; do
-    [[ -n "$display_filter" && "$ver" != "$display_filter" ]] && continue
+    $hide_direct && [[ "$ver" == "Direct Play" ]] && continue
 
     local display_path="$p"
     if [[ ${#display_path} -gt ${w[0]} ]]; then
@@ -407,6 +420,7 @@ generate_console() {
   echo "=== Summary ==="
   echo "Total files scanned:   $total"
   echo "Direct Play:          $direct"
+  echo "Subtitle Issue:       $sub_issue"
   echo "Transcode Needed:     $transcode"
   echo "Skipped (unreadable): $skipped"
 
