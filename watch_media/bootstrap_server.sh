@@ -148,6 +148,7 @@ chmod 640 "$REMOTE_QUEUE"
 
 log "Cloning/updating repository"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
+  git -C "$INSTALL_DIR" reset --hard
   git -C "$INSTALL_DIR" fetch --prune origin
   if [[ -n "$DEPLOY_REF" ]]; then
     if git -C "$INSTALL_DIR" rev-parse --verify --quiet "origin/$DEPLOY_REF" >/dev/null; then
@@ -168,7 +169,12 @@ fi
 chown -R root:root "$INSTALL_DIR"
 find "$INSTALL_DIR" -type d -exec chmod 755 {} +
 find "$INSTALL_DIR" -type f -exec chmod 644 {} +
-chmod 755 "$INSTALL_DIR/scan_transcode.sh" "$INSTALL_DIR/watch_media/watch_media.sh" "$INSTALL_DIR/watch_media/pull_queue.sh" 2>/dev/null || true
+chmod 755 \
+  "$INSTALL_DIR/scan_transcode.sh" \
+  "$INSTALL_DIR/deploy_watch_media.sh" \
+  "$INSTALL_DIR/watch_media/bootstrap_server.sh" \
+  "$INSTALL_DIR/watch_media/watch_media.sh" \
+  "$INSTALL_DIR/watch_media/pull_queue.sh" 2>/dev/null || true
 
 log "Writing server config"
 cat > "$CONFIG_DIR/server.env" <<EOF
