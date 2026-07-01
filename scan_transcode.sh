@@ -12,6 +12,7 @@ FORMAT="both"
 OUTPUT_STEM=""
 OUTPUT_CSV=""
 OUTPUT_HTML=""
+FILE_LIST_INPUT=""
 CHECK_SUBTITLES=true
 VERBOSE=false
 JOBS=""
@@ -30,6 +31,7 @@ Usage: $(basename "$0") /path/to/media [options]
 Output:
   --format FMT         csv, html, both (default: both)
   --output FILE        Basename stem (e.g. report -> report.csv + report.html)
+  --file-list FILE     Incremental mode: scan only paths listed in FILE
 
 Filtering:
   --no-check-subtitles Skip subtitle stream compatibility checks
@@ -50,6 +52,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --format)           FORMAT="$2"; shift 2 ;;
     --output)           OUTPUT_STEM="$2"; shift 2 ;;
+    --file-list)        FILE_LIST_INPUT="$2"; shift 2 ;;
     --check-subtitles)  CHECK_SUBTITLES=true; shift ;;
     --no-check-subtitles) CHECK_SUBTITLES=false; shift ;;
     --verbose)          VERBOSE=true; shift ;;
@@ -64,6 +67,7 @@ done
 # ?????? Validation ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 [[ -n "$SCAN_DIR" ]] || { echo "Error: scan directory required"; usage; }
 [[ -d "$SCAN_DIR" ]] || { echo "Error: '$SCAN_DIR' is not a directory"; exit 1; }
+[[ -z "$FILE_LIST_INPUT" || -f "$FILE_LIST_INPUT" ]] || { echo "Error: --file-list '$FILE_LIST_INPUT' does not exist"; exit 1; }
 command -v ffprobe &>/dev/null || { echo "Error: ffprobe not found"; exit 1; }
 [[ "$FORMAT" =~ ^(csv|html|both)$ ]] || { echo "Error: --format must be csv, html, or both"; exit 1; }
 
@@ -95,9 +99,10 @@ cache_stem="${OUTPUT_CSV%.csv}"
 CACHE="${cache_stem}.cache"
 CACHE_HITS=$(mktemp)
 FILE_LIST=$(mktemp)
+CHANGED_RELS=$(mktemp)
 DIFF_RESULT=$(mktemp)
 OLD_SNAPSHOT="${cache_stem}.snapshot"
-trap 'rm -f "$RESULTS" "$SKIPPED" "${CACHE_HITS:-}" "$FILE_LIST" "$DIFF_RESULT"' EXIT
+trap 'rm -f "$RESULTS" "$SKIPPED" "${CACHE_HITS:-}" "$FILE_LIST" "$CHANGED_RELS" "$DIFF_RESULT"' EXIT
 
 # Dedup helper for reason strings
 _reason_unique() {
@@ -105,6 +110,37 @@ _reason_unique() {
   local e
   for e in "$@"; do [[ "$e" == "$needle" ]] && return 1; done
   return 0
+}
+
+is_supported_extension() {
+  local path_lc="${1,,}"
+  local ext
+  for ext in "${EXT_LIST[@]}"; do
+    ext="${ext,,}"
+    [[ "$path_lc" == *."$ext" ]] && return 0
+  done
+  return 1
+}
+
+normalize_input_path() {
+  local raw="$1" full rel
+  raw="${raw%$'\r'}"
+  [[ -z "$raw" || "$raw" == \#* ]] && return 1
+  if [[ "$raw" == /* ]]; then
+    full="$raw"
+  else
+    full="$SCAN_DIR/${raw#./}"
+  fi
+  if [[ -e "$full" ]]; then
+    rel=$(realpath --relative-to="$SCAN_DIR" "$full" 2>/dev/null || printf "%s" "${full#"$SCAN_DIR"/}")
+  elif [[ "$full" == "$SCAN_DIR"/* ]]; then
+    rel="${full#"$SCAN_DIR"/}"
+  else
+    rel="${raw#./}"
+  fi
+  [[ "$rel" == ..* || "$rel" == /* ]] && return 1
+  is_supported_extension "$rel" || return 1
+  printf '%s|%s\n' "$rel" "$full"
 }
 
 # ?????? Process a single file ???????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
@@ -223,10 +259,28 @@ export SCAN_DIR RESULTS CACHE_HITS SUPPORTED_CONTAINERS SUPPORTED_VIDEO TRANSCOD
 echo "Scanning: $SCAN_DIR"
 echo "Extensions: $EXTENSIONS"
 echo "Parallel jobs: $JOBS"
+if [[ -n "$FILE_LIST_INPUT" ]]; then
+  echo "Incremental file list: $FILE_LIST_INPUT"
+fi
 echo ""
 
-# Generate file list once (reused for count and xargs)
-find "$SCAN_DIR" -follow -type f \( "${FIND_ARGS[@]:1}" \) -print0 2>/dev/null > "$FILE_LIST"
+INCREMENTAL=false
+[[ -n "$FILE_LIST_INPUT" ]] && INCREMENTAL=true
+
+if $INCREMENTAL; then
+  while IFS= read -r input_path || [[ -n "$input_path" ]]; do
+    normalized=$(normalize_input_path "$input_path" || true)
+    [[ -z "$normalized" ]] && continue
+    rel="${normalized%%|*}"
+    full="${normalized#*|}"
+    echo "$rel" >> "$CHANGED_RELS"
+    [[ -f "$full" ]] && printf '%s\0' "$full" >> "$FILE_LIST"
+  done < "$FILE_LIST_INPUT"
+  sort -u "$CHANGED_RELS" -o "$CHANGED_RELS"
+else
+  # Generate file list once (reused for count and xargs)
+  find "$SCAN_DIR" -type f \( "${FIND_ARGS[@]:1}" \) -print0 2>/dev/null > "$FILE_LIST"
+fi
 
 # ?????? Pre-populate RESULTS from cache ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 if [[ -f "$CACHE" ]]; then
@@ -236,31 +290,57 @@ if [[ -f "$CACHE" ]]; then
     rm -f "$CACHE"
   else
     while IFS='|' read -r cached_mtime cached_path cached_rest; do
-      full="$SCAN_DIR/$cached_path"
-      if [[ -f "$full" ]]; then
-        cur_mtime=$(stat -c '%Y' "$full" 2>/dev/null || echo "0")
-        if [[ "$cur_mtime" == "$cached_mtime" ]]; then
+      if $INCREMENTAL; then
+        if ! grep -Fxq "$cached_path" "$CHANGED_RELS" 2>/dev/null; then
           if [[ "$cached_rest" =~ ^SKIPPED\| ]]; then
             err="${cached_rest#SKIPPED|}"
             echo "$cached_path: $err" >> "$SKIPPED"
           else
             echo "$cached_path|$cached_rest" >> "$RESULTS"
           fi
-          echo "$cached_path" >> "$CACHE_HITS"
+        fi
+      else
+        full="$SCAN_DIR/$cached_path"
+        if [[ -f "$full" ]]; then
+          cur_mtime=$(stat -c '%Y' "$full" 2>/dev/null || echo "0")
+          if [[ "$cur_mtime" == "$cached_mtime" ]]; then
+            if [[ "$cached_rest" =~ ^SKIPPED\| ]]; then
+              err="${cached_rest#SKIPPED|}"
+              echo "$cached_path: $err" >> "$SKIPPED"
+            else
+              echo "$cached_path|$cached_rest" >> "$RESULTS"
+            fi
+            echo "$cached_path" >> "$CACHE_HITS"
+          fi
         fi
       fi
     done < <(tail -n +2 "$CACHE")
   fi
 fi
 
-file_count=$(< "$FILE_LIST" tr '\0' '\n' | wc -l 2>/dev/null || echo 0)
-cached_count=$(wc -l < "$CACHE_HITS" 2>/dev/null || echo 0)
-to_scan=$((file_count - cached_count))
-echo "Files found: $file_count  (cached: $cached_count  to scan: $to_scan)"
+if $INCREMENTAL; then
+  changed_count=$(wc -l < "$CHANGED_RELS" 2>/dev/null || echo 0)
+  to_scan=$(< "$FILE_LIST" tr '\0' '\n' | wc -l 2>/dev/null || echo 0)
+  missing_count=$((changed_count - to_scan))
+  [[ $missing_count -lt 0 ]] && missing_count=0
+  echo "Incremental changes: $changed_count  (existing to scan: $to_scan  removed/missing: $missing_count)"
+else
+  file_count=$(< "$FILE_LIST" tr '\0' '\n' | wc -l 2>/dev/null || echo 0)
+  cached_count=$(wc -l < "$CACHE_HITS" 2>/dev/null || echo 0)
+  to_scan=$((file_count - cached_count))
+  echo "Files found: $file_count  (cached: $cached_count  to scan: $to_scan)"
+fi
 echo ""
 
+CACHE_DIRTY=false
+if $INCREMENTAL; then
+  [[ ${changed_count:-0} -gt 0 ]] && CACHE_DIRTY=true
+elif [[ $to_scan -gt 0 ]]; then
+  CACHE_DIRTY=true
+fi
+
 REUSE_REPORTS=false
-if [[ $to_scan -eq 0 ]]; then
+if ! $INCREMENTAL && [[ $to_scan -eq 0 ]]; then
   case "$FORMAT" in
     csv)  [[ -f "$OUTPUT_CSV" ]] && REUSE_REPORTS=true ;;
     html) [[ -f "$OUTPUT_HTML" ]] && REUSE_REPORTS=true ;;
@@ -280,7 +360,11 @@ if [[ $to_scan -gt 0 ]]; then
     echo "Warning: some files could not be processed" >&2
   fi
 else
-  echo "All files up to date in cache."
+  if $INCREMENTAL; then
+    echo "No existing changed media files to scan."
+  else
+    echo "All files up to date in cache."
+  fi
 fi
 
 total=$(wc -l < "$RESULTS")
@@ -291,7 +375,7 @@ both_issues=$(awk -F'|' '$7 == "codec,subtitle" { count++ } END { print count + 
 skipped=$(wc -l < "$SKIPPED" 2>/dev/null || echo 0)
 
 # ?????? Rebuild cache from RESULTS ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
-if [[ $to_scan -gt 0 ]]; then
+if $CACHE_DIRTY; then
   {
     echo "# config:schema=2;check_subtitles=$CHECK_SUBTITLES"
     while IFS='|' read -r path rest; do
@@ -313,7 +397,7 @@ if [[ $to_scan -gt 0 ]]; then
 fi
 
 # ?????? Diff against previous run ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
-if [[ $to_scan -eq 0 ]]; then
+if ! $CACHE_DIRTY; then
   {
     echo "=== Changes since last run ==="
     echo "  No changes detected."
@@ -369,7 +453,7 @@ elif [[ -f "$OLD_SNAPSHOT" ]]; then
 fi
 
 # Write new snapshot
-if [[ $to_scan -gt 0 ]]; then
+if $CACHE_DIRTY; then
   awk -F'|' '{print $6 "|" $1}' "$RESULTS" | sort -t'|' -k2 > "$OLD_SNAPSHOT"
 fi
 

@@ -1,9 +1,0 @@
-# watch_media — future inotify-based daemon
-#
-# Planned for a later update. The idea:
-#   - Uses inotifywait to recursively watch scan directories
-#   - Debounces file create/modify events (e.g. wait 30s of quiet)
-#   - Fires scan_transcode.sh on changes, appending to a rolling report
-#   - Handles SIGTERM for clean shutdown
-#
-# Not implemented yet.
