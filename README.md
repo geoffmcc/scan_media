@@ -1,6 +1,6 @@
 # scan_transcode.sh — How It Works
 
-Scans a media library directory, inspects every video file with `ffprobe`, and reports which files will require transcoding when played on a Samsung NU6900 TV (and likely other Samsung models or TV brands) via Jellyfin/DLNA. Outputs a console summary plus CSV and/or HTML reports.
+Scans a media library directory, inspects every video file with `ffprobe`, and reports codec and subtitle issues that may trigger transcoding when played on a Samsung NU6900 TV (and likely other Samsung models or TV brands) via Jellyfin/DLNA. Outputs a console summary plus CSV and/or HTML reports.
 
 ## Usage
 
@@ -14,8 +14,8 @@ Scans a media library directory, inspects every video file with `ffprobe`, and r
 |---|---|
 | `--format FMT` | Output format: `csv`, `html`, `both` (default: `both`) |
 | `--output FILE` | Basename stem (e.g. `--output report` → `report.csv` + `report.html`) |
-| `--only-transcode` | Show only files needing transcode in the console table. Does not affect the HTML checkbox or CSV — full data is always written to both reports. |
-| `--check-subtitles` | Check subtitle stream compatibility |
+| `--only-transcode` | Show only files with codec/subtitle issues in the console table. Does not affect the HTML checkboxes or CSV — full data is always written to both reports. |
+| `--no-check-subtitles` | Skip subtitle stream compatibility checks for a codec-only scan. Subtitle checks are on by default. |
 | `--jobs N` | Parallel ffprobe workers (default: CPU count) |
 | `--exts "e1,e2,..."` | Override default extension list |
 | `--verbose` | Print each file as it is processed |
@@ -30,8 +30,8 @@ Scans a media library directory, inspects every video file with `ffprobe`, and r
 # HTML report only, custom filename stem
 ./scan_transcode.sh /mnt/media --format html --output ~/media_report
 
-# CSV only, transcode-only filter, subtitle check
-./scan_transcode.sh /mnt/media --format csv --only-transcode --check-subtitles
+# CSV only, issue-only console filter
+./scan_transcode.sh /mnt/media --format csv --only-transcode
 ```
 
 ## Architecture
@@ -58,7 +58,7 @@ Results are cached in a `.cache` file alongside the CSV report. Each entry store
 - Files whose mtime hasn't changed are pulled from the cache and skipped by workers
 - Files that previously errored (unreadable) are also cached so they aren't retried
 - When all files are up to date, the script exits immediately with no report regeneration
-- The cache includes a config header; if `--check-subtitles` is toggled, the cache is invalidated and a full re-scan runs
+- The cache includes a config header; if subtitle checking is toggled with `--no-check-subtitles`, the cache is invalidated and a full re-scan runs
 - Delete the `.cache` file to force a full re-scan
 
 ### 4. Stream Inspection (`process_file`)
@@ -68,27 +68,28 @@ For each file, `ffprobe` is called once with JSON output containing format info 
 - **Container**: compared against the supported container list
 - **Attached pictures**: streams where `disposition.attached_pic == 1` (embedded cover art, thumbnails) are excluded from the codec check so `png`/`jpeg` album art doesn't trigger false positives
 - **Video streams**: codec name checked against H.264, HEVC, MPEG-2, MPEG-4, VP8, VP9, MJPEG
-- **Audio streams**: codec name and tag string checked against the transcode blocklist: DTS, DTS-HD MA, DTS:X, Dolby TrueHD. Unlike container/video, **all** audio streams must be unsupported for the file to be flagged — if at least one compatible stream exists (e.g. AC3 alongside DTS), the file is considered Direct Play
-- **Subtitle streams** (only if `--check-subtitles`): codec name checked against SRT, `mov_text`, ASS, SSA, SMI, SUB, MicroDVD, TTXT, XML — anything else (PGS, VobSub) is flagged
+- **Audio streams**: codec name and tag string checked against the transcode blocklist: DTS, DTS-HD MA, DTS:X, Dolby TrueHD. Unlike container/video, **all** audio streams must be unsupported for the file to be flagged — if at least one compatible stream exists (e.g. AC3 alongside DTS), the file is not given an audio codec issue
+- **Subtitle streams**: codec name checked against SRT, `mov_text`, ASS, SSA, SMI, SUB, MicroDVD, TTXT, XML — anything else (PGS, VobSub) is flagged unless `--no-check-subtitles` is used
 
 ### 5. Verdict Logic
 
-- **Direct Play** — no issues found across all checked streams
-- **Subtitle Issue** (only when `--check-subtitles`) — all flagged issues are subtitle-only, no codec problems
-- **Transcode Needed** — container unsupported, video codec unsupported, or **all** audio streams are in the transcode blocklist. Each specific reason is recorded (e.g., "Audio codec 'dts' not supported")
+- **No Issues** — no codec or subtitle issues found across all checked streams
+- **Codec Issues** — container/video is unsupported, or **all** audio streams are in the transcode blocklist. Each specific reason is recorded (e.g., "All audio tracks may require transcoding: dts")
+- **Subtitle Issues** — subtitle format may require burn-in/transcoding on Samsung/Jellyfin
+- **Codec + Subtitle Issues** — both issue types are present. In HTML, this file appears when either the Codec Issues or Subtitle Issues filter is enabled.
 
 ### 6. Output
 
 **Console** (always unless `--format html`): formatted table with file path, container, video codec, audio codec, subtitle codec, and verdict. Transcode reasons are indented under each file. `--only-transcode` filters to just problematic files. Unreadable files are listed in a separate Skipped Files section at the bottom.
 
-**CSV** (if format includes `csv`): machine-readable with columns `path,container,video_codec,audio_codec,subtitle_codec,verdict,reason`. If files were skipped, a `# Skipped files: N` comment block is appended at the end.
+**CSV** (if format includes `csv`): machine-readable with columns `path,container,video_codec,audio_codec,subtitle_codec,verdict,issue_type,reason`. If files were skipped, a `# Skipped files: N` comment block is appended at the end.
 
 **HTML** (if format includes `html`): self-contained single file with:
 
-- Summary banner with total / direct play / transcode / skipped counts
+- Summary banner with total / no issues / codec issues / subtitle issues / both counts
 - Collapsible Skipped Files section (orange) listing unreadable files
-- Color-coded table rows (green = Direct Play, amber = Subtitle Issue, red = Transcode Needed)
-- Three independent JS-powered checkboxes to hide/show each verdict category
+- Color-coded table rows (green = No Issues, amber = Subtitle Issues, red = Codec Issues, split red/amber = both)
+- Three independent JS-powered checkboxes to show/hide No Issues, Codec Issues, and Subtitle Issues. Codec/subtitle filters overlap, so a file with both issue types remains visible if either issue filter is checked.
 - Reasons displayed as italic text below each file row
 - No external dependencies — CSS and JS are inline
 

@@ -13,7 +13,7 @@ OUTPUT_STEM=""
 OUTPUT_CSV=""
 OUTPUT_HTML=""
 ONLY_TRANSCODE=false
-CHECK_SUBTITLES=false
+CHECK_SUBTITLES=true
 VERBOSE=false
 JOBS=""
 EXTENSIONS="mkv,mp4,avi,mov,ts,m2ts,vob,flv,webm,wmv,rmvb"
@@ -33,8 +33,8 @@ Output:
   --output FILE        Basename stem (e.g. report -> report.csv + report.html)
 
 Filtering:
-  --only-transcode     Show only files needing transcode
-  --check-subtitles    Check subtitle stream compatibility
+  --only-transcode     Show only files with codec/subtitle issues
+  --no-check-subtitles Skip subtitle stream compatibility checks
 
 Performance:
   --jobs N             Parallel ffprobe workers (default: CPU count)
@@ -54,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --output)           OUTPUT_STEM="$2"; shift 2 ;;
     --only-transcode)   ONLY_TRANSCODE=true; shift ;;
     --check-subtitles)  CHECK_SUBTITLES=true; shift ;;
+    --no-check-subtitles) CHECK_SUBTITLES=false; shift ;;
     --verbose)          VERBOSE=true; shift ;;
     --jobs)             JOBS="$2"; shift 2 ;;
     --exts)             EXTENSIONS="$2"; shift 2 ;;
@@ -126,10 +127,11 @@ process_file() {
   local container
   container=$(jq -r '.format.format_name // "unknown"' <<< "$json")
 
-  local video_codecs="" audio_codecs="" sub_codecs=""
+  local video_codecs="" audio_codecs="" sub_codecs="" unsupported_audio_codecs=""
   local total_audio=0 unsupported_audio=0
-  local verdict="Direct Play"
-  local reasons=()
+  local verdict="No Issues"
+  local has_codec_issue=false has_subtitle_issue=false
+  local codec_reasons=() subtitle_reasons=()
 
   # Container check
   local container_ok=false
@@ -140,8 +142,8 @@ process_file() {
     fi
   done
   if ! $container_ok; then
-    reasons+=("Container '$container' not supported")
-    verdict="Transcode Needed"
+    codec_reasons+=("Container '$container' not supported")
+    has_codec_issue=true
   fi
 
   while IFS='|' read -r codec_type codec_name codec_tag; do
@@ -152,8 +154,8 @@ process_file() {
           [[ "$codec_name" == "$v" ]] && { vid_ok=true; break; }
         done
         if ! $vid_ok; then
-          _reason_unique "Video codec '$codec_name' not supported" "${reasons[@]}" && reasons+=("Video codec '$codec_name' not supported")
-          verdict="Transcode Needed"
+          _reason_unique "Video codec '$codec_name' not supported" "${codec_reasons[@]}" && codec_reasons+=("Video codec '$codec_name' not supported")
+          has_codec_issue=true
         fi
         [[ ",$video_codecs," != *",$codec_name,"* ]] && video_codecs="${video_codecs:+$video_codecs,}$codec_name"
         ;;
@@ -171,7 +173,7 @@ process_file() {
         total_audio=$((total_audio + 1))
         if $aud_bad; then
           unsupported_audio=$((unsupported_audio + 1))
-          _reason_unique "Audio codec '$codec_name' not supported" "${reasons[@]}" && reasons+=("Audio codec '$codec_name' not supported")
+          [[ ",$unsupported_audio_codecs," != *",$codec_name,"* ]] && unsupported_audio_codecs="${unsupported_audio_codecs:+$unsupported_audio_codecs,}$codec_name"
         fi
         [[ ",$audio_codecs," != *",$codec_name,"* ]] && audio_codecs="${audio_codecs:+$audio_codecs,}$codec_name"
         ;;
@@ -182,8 +184,8 @@ process_file() {
             [[ "$codec_name" == "$s" ]] && { sub_ok=true; break; }
           done
           if ! $sub_ok; then
-            _reason_unique "Subtitle codec '$codec_name' not supported" "${reasons[@]}" && reasons+=("Subtitle codec '$codec_name' not supported")
-            verdict="Transcode Needed"
+            _reason_unique "Subtitle codec '$codec_name' may require burn-in/transcoding" "${subtitle_reasons[@]}" && subtitle_reasons+=("Subtitle codec '$codec_name' may require burn-in/transcoding")
+            has_subtitle_issue=true
           fi
           [[ ",$sub_codecs," != *",$codec_name,"* ]] && sub_codecs="${sub_codecs:+$sub_codecs,}$codec_name"
         fi
@@ -192,20 +194,29 @@ process_file() {
   done < <(jq -r '.streams[] | select(.disposition.attached_pic != 1) | [.codec_type // "unknown", (.codec_name // .codec_tag_string // "unknown" | ascii_downcase), (.codec_tag_string // "" | ascii_downcase)] | join("|")' <<< "$json")
 
   if [[ $total_audio -gt 0 && $unsupported_audio -eq $total_audio ]]; then
-    verdict="Transcode Needed"
+    codec_reasons+=("All audio tracks may require transcoding: $unsupported_audio_codecs")
+    has_codec_issue=true
   fi
 
-  if [[ "$verdict" == "Transcode Needed" ]]; then
-    local all_sub=true
-    for r in "${reasons[@]}"; do
-      [[ "$r" == "Subtitle codec '"* ]] || { all_sub=false; break; }
-    done
-    [[ "$all_sub" == true ]] && verdict="Subtitle Issue"
+  local issue_type="none"
+  if $has_codec_issue && $has_subtitle_issue; then
+    verdict="Codec + Subtitle Issues"
+    issue_type="codec,subtitle"
+  elif $has_codec_issue; then
+    verdict="Codec Issues"
+    issue_type="codec"
+  elif $has_subtitle_issue; then
+    verdict="Subtitle Issues"
+    issue_type="subtitle"
   fi
 
-  local reason_str
-  reason_str=$(IFS='; '; echo "${reasons[*]}")
-  echo "$relpath|$container|$video_codecs|$audio_codecs|$sub_codecs|$verdict|$reason_str" >> "$RESULTS"
+  local reason_str=""
+  local reason_parts=("${codec_reasons[@]}" "${subtitle_reasons[@]}")
+  if [[ ${#reason_parts[@]} -gt 0 ]]; then
+    reason_str=$(printf '%s; ' "${reason_parts[@]}")
+    reason_str="${reason_str%; }"
+  fi
+  echo "$relpath|$container|$video_codecs|$audio_codecs|$sub_codecs|$verdict|$issue_type|$reason_str" >> "$RESULTS"
 }
 
 export -f process_file _reason_unique
@@ -224,7 +235,7 @@ find "$SCAN_DIR" -follow -type f \( "${FIND_ARGS[@]:1}" \) -print0 2>/dev/null >
 if [[ -f "$CACHE" ]]; then
   # Validate config header — delete cache if flags have changed
   IFS= read -r header_line < "$CACHE"
-  if [[ "$header_line" != "# config:check_subtitles=$CHECK_SUBTITLES" ]]; then
+  if [[ "$header_line" != "# config:schema=2;check_subtitles=$CHECK_SUBTITLES" ]]; then
     rm -f "$CACHE"
   else
     while IFS='|' read -r cached_mtime cached_path cached_rest; do
@@ -268,14 +279,15 @@ else
 fi
 
 total=$(wc -l < "$RESULTS")
-transcode=$(grep -c "^.*|Transcode Needed" "$RESULTS" || true)
-sub_issue=$(grep -c "^.*|Subtitle Issue" "$RESULTS" || true)
-direct=$((total - transcode - sub_issue))
+no_issues=$(awk -F'|' '$7 == "none" { count++ } END { print count + 0 }' "$RESULTS")
+codec_issues=$(awk -F'|' '$7 ~ /(^|,)codec(,|$)/ { count++ } END { print count + 0 }' "$RESULTS")
+subtitle_issues=$(awk -F'|' '$7 ~ /(^|,)subtitle(,|$)/ { count++ } END { print count + 0 }' "$RESULTS")
+both_issues=$(awk -F'|' '$7 == "codec,subtitle" { count++ } END { print count + 0 }' "$RESULTS")
 skipped=$(wc -l < "$SKIPPED" 2>/dev/null || echo 0)
 
 # ?????? Rebuild cache from RESULTS ?????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 {
-  echo "# config:check_subtitles=$CHECK_SUBTITLES"
+  echo "# config:schema=2;check_subtitles=$CHECK_SUBTITLES"
   while IFS='|' read -r path rest; do
     full="$SCAN_DIR/$path"
     if [[ -f "$full" ]]; then
@@ -327,7 +339,7 @@ if [[ -f "$OLD_SNAPSHOT" ]]; then
         old_verdict="${old_line%%|*}"
         new_verdict="${new_line%%|*}"
         if [[ "$old_verdict" != "$new_verdict" ]]; then
-          if [[ "$new_verdict" == "Direct Play" ]]; then
+          if [[ "$new_verdict" == "No Issues" ]]; then
             echo "  FIXED: $new_path"
           else
             echo "  CHANGED: $old_verdict -> $new_verdict - $new_path"
@@ -356,11 +368,12 @@ csv_quote() {
 # ?????? Generate CSV ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 generate_csv() {
   {
-    echo "path,container,video_codec,audio_codec,subtitle_codec,verdict,reason"
-    while IFS='|' read -r p c v a s ver reason; do
-      printf '%s,%s,%s,%s,%s,%s,%s\n' \
+    echo "path,container,video_codec,audio_codec,subtitle_codec,verdict,issue_type,reason"
+    while IFS='|' read -r p c v a s ver issue_type reason; do
+      printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$(csv_quote "$p")" "$(csv_quote "$c")" "$(csv_quote "$v")" \
-        "$(csv_quote "$a")" "$(csv_quote "$s")" "$(csv_quote "$ver")" "$(csv_quote "$reason")"
+        "$(csv_quote "$a")" "$(csv_quote "$s")" "$(csv_quote "$ver")" \
+        "$(csv_quote "$issue_type")" "$(csv_quote "$reason")"
     done < <(sort -t'|' -k1 "$RESULTS")
     if [[ "$skipped" -gt 0 ]]; then
       echo ""
@@ -383,22 +396,24 @@ generate_html() {
     echo '  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;'
     echo '         margin: 20px; background: #f5f5f5; color: #333; }'
     echo '  h1 { font-size: 1.4em; margin-bottom: 4px; }'
-    echo '  .summary { margin: 12px 0; display: flex; gap: 16px; }'
-    echo '  .summary span { background: #fff; padding: 6px 14px; border-radius: 6px;'
+    echo '  .summary { margin: 12px 0; display: flex; gap: 16px; flex-wrap: wrap; }'
+    echo '  .summary span, .filters label { background: #fff; padding: 6px 14px; border-radius: 6px;'
     echo '                  font-size: 0.9em; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }'
     echo '  .summary .num { font-weight: 700; }'
-    echo '  .direct { color: #1a7f1a; } .transcode { color: #b02; }'
+    echo '  .direct { color: #1a7f1a; } .codec { color: #b02; } .subtitle { color: #9a6700; }'
     echo '  label { font-size: 0.9em; cursor: pointer; }'
+    echo '  .filters { display:flex; gap:16px; flex-wrap:wrap; margin: 12px 0; }'
     echo '  table { border-collapse: collapse; width: 100%;'
     echo '          background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.1);'
     echo '          border-radius: 6px; overflow: hidden; }'
     echo '  th, td { padding: 6px 10px; text-align: left; font-size: 0.85em;'
     echo '           border-bottom: 1px solid #eee; }'
     echo '  th { background: #444; color: #fff; font-weight: 600; }'
-    echo '  tr.direct-play { background: #e8f5e9; }'
+    echo '  tr.no-issues { background: #e8f5e9; }'
     echo '  tr.subtitle-issue { background: #fff3cd; }'
-    echo '  tr.transcode { background: #ffebee; }'
-    echo '  tr.direct-play:hover, tr.subtitle-issue:hover, tr.transcode:hover { filter: brightness(0.97); }'
+    echo '  tr.codec-issue { background: #ffebee; }'
+    echo '  tr.codec-issue.subtitle-issue { background: linear-gradient(90deg, #ffebee 0%, #ffebee 50%, #fff3cd 50%, #fff3cd 100%); }'
+    echo '  tr.no-issues:hover, tr.subtitle-issue:hover, tr.codec-issue:hover { filter: brightness(0.97); }'
     echo '  .reasons { font-style: italic; color: #888; font-size: 0.85em; }'
     echo '  .reasons-td { padding: 0 10px 6px 10px; }'
     echo '  .hidden { display: none; }'
@@ -408,9 +423,10 @@ generate_html() {
     echo "<h1>Transcode Report</h1>"
     echo "<div class=\"summary\">"
     echo "  <span>Scanned: <span class=\"num\">$total</span></span>"
-    echo "  <span>Direct Play: <span class=\"num direct\">$direct</span></span>"
-    echo "  <span>Subtitle Issue: <span class=\"num\">$sub_issue</span></span>"
-    echo "  <span>Transcode Needed: <span class=\"num transcode\">$transcode</span></span>"
+    echo "  <span>No Issues: <span class=\"num direct\">$no_issues</span></span>"
+    echo "  <span>Codec Issues: <span class=\"num codec\">$codec_issues</span></span>"
+    echo "  <span>Subtitle Issues: <span class=\"num subtitle\">$subtitle_issues</span></span>"
+    echo "  <span>Both: <span class=\"num\">$both_issues</span></span>"
     echo "</div>"
     if [[ "$skipped" -gt 0 ]]; then
       echo "<details style=\"margin: 12px 0;\">"
@@ -423,10 +439,10 @@ generate_html() {
       echo "  </ul>"
       echo "</details>"
     fi
-    echo '<div style="display:flex; gap:16px; flex-wrap:wrap;">'
-    echo '  <label><input type="checkbox" id="hideDirect" onchange="toggleFilter()"> Hide Direct Play</label>'
-    echo '  <label><input type="checkbox" id="hideSubtitle" onchange="toggleFilter()"> Hide Subtitle Issues</label>'
-    echo '  <label><input type="checkbox" id="hideTranscode" onchange="toggleFilter()"> Hide Transcode Issues</label>'
+    echo '<div class="filters">'
+    echo '  <label><input type="checkbox" id="showNone" checked onchange="toggleFilter()"> No Issues</label>'
+    echo '  <label><input type="checkbox" id="showCodec" checked onchange="toggleFilter()"> Codec Issues</label>'
+    echo '  <label><input type="checkbox" id="showSubtitle" checked onchange="toggleFilter()"> Subtitle Issues</label>'
     echo '</div>'
     echo '<table>'
     echo '<colgroup>'
@@ -441,15 +457,12 @@ generate_html() {
     echo '  <th>File</th><th>Container</th><th>Video</th><th>Audio</th><th>Subtitles</th><th>Verdict</th>'
     echo '</tr></thead><tbody>'
 
-    sort -t'|' -k1 "$RESULTS" | while IFS='|' read -r p c v a s ver reason; do
+    sort -t'|' -k1 "$RESULTS" | while IFS='|' read -r p c v a s ver issue_type reason; do
       local row_class
-      if [[ "$ver" == "Direct Play" ]]; then
-        row_class="direct-play"
-      elif [[ "$ver" == "Subtitle Issue" ]]; then
-        row_class="subtitle-issue"
-      else
-        row_class="transcode"
-      fi
+      row_class=""
+      [[ "$issue_type" == "none" ]] && row_class="no-issues"
+      [[ "$issue_type" == *"codec"* ]] && row_class="${row_class:+$row_class }codec-issue"
+      [[ "$issue_type" == *"subtitle"* ]] && row_class="${row_class:+$row_class }subtitle-issue"
 
       # Escape HTML entities
       p_esc=$(echo "$p" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
@@ -474,21 +487,19 @@ generate_html() {
     echo '</tbody></table>'
     echo '<script>'
     echo 'function toggleFilter() {'
-    echo '  var rules = ['
-    echo '    { id: "hideDirect", cls: "direct-play" },'
-    echo '    { id: "hideSubtitle", cls: "subtitle-issue" },'
-    echo '    { id: "hideTranscode", cls: "transcode" }'
-    echo '  ];'
-    echo '  for (var r = 0; r < rules.length; r++) {'
-    echo '    var hidden = document.getElementById(rules[r].id).checked;'
-    echo '    var rows = document.querySelectorAll("tr." + rules[r].cls);'
-    echo '    for (var i = 0; i < rows.length; i++) {'
-    echo '      rows[i].classList.toggle("hidden", hidden);'
-    echo '      var next = rows[i].nextElementSibling;'
-    echo '      if (next && next.classList.contains("reasons-row")) {'
-    echo '        next.classList.toggle("hidden", hidden);'
-    echo '      }'
-    echo '    }'
+    echo '  var showNone = document.getElementById("showNone").checked;'
+    echo '  var showCodec = document.getElementById("showCodec").checked;'
+    echo '  var showSubtitle = document.getElementById("showSubtitle").checked;'
+    echo '  var rows = document.querySelectorAll("tbody tr:not(.reasons-row)");'
+    echo '  for (var i = 0; i < rows.length; i++) {'
+    echo '    var row = rows[i];'
+    echo '    var visible = false;'
+    echo '    if (row.classList.contains("no-issues") && showNone) visible = true;'
+    echo '    if (row.classList.contains("codec-issue") && showCodec) visible = true;'
+    echo '    if (row.classList.contains("subtitle-issue") && showSubtitle) visible = true;'
+    echo '    row.classList.toggle("hidden", !visible);'
+    echo '    var next = row.nextElementSibling;'
+    echo '    if (next && next.classList.contains("reasons-row")) next.classList.toggle("hidden", !visible);'
     echo '  }'
     echo '}'
     echo '</script>'
@@ -513,7 +524,7 @@ generate_console() {
   local headers=("File" "Container" "Video" "Audio" "Subtitles" "Verdict")
   for ((i=0; i<6; i++)); do w[i]=${#headers[i]}; done
   local file_cap=60
-  while IFS='|' read -r p c v a s ver _; do
+  while IFS='|' read -r p c v a s ver _ _; do
     (( ${#p} > w[0] && ${#p} <= file_cap )) && w[0]=${#p}
     (( ${#c} > w[1] )) && w[1]=${#c}
     (( ${#v} > w[2] )) && w[2]=${#v}
@@ -545,8 +556,8 @@ generate_console() {
   local hide_direct=false
   $ONLY_TRANSCODE && hide_direct=true
 
-  while IFS='|' read -r p c v a s ver reason; do
-    $hide_direct && [[ "$ver" == "Direct Play" ]] && continue
+  while IFS='|' read -r p c v a s ver issue_type reason; do
+    $hide_direct && [[ "$issue_type" == "none" ]] && continue
 
     local display_path="$p"
     if [[ ${#display_path} -gt ${w[0]} ]]; then
@@ -554,9 +565,9 @@ generate_console() {
     fi
 
     local ver_color=""
-    [[ "$ver" == "Direct Play" ]] && ver_color="$green"
-    [[ "$ver" == "Subtitle Issue" ]] && ver_color="$yellow"
-    [[ "$ver" == "Transcode Needed" ]] && ver_color="$red"
+    [[ "$issue_type" == "none" ]] && ver_color="$green"
+    [[ "$issue_type" == "subtitle" ]] && ver_color="$yellow"
+    [[ "$issue_type" == "codec" || "$issue_type" == "codec,subtitle" ]] && ver_color="$red"
 
     printf "$fmt_data" "$display_path" "$c" "$v" "$a" "$s"
     printf "${ver_color}%-${w[5]}s${reset}\n" "$ver"
@@ -574,9 +585,10 @@ generate_console() {
   echo ""
   echo "=== Summary ==="
   echo "Total files scanned:   $total"
-  echo "Direct Play:          $direct"
-  echo "Subtitle Issue:       $sub_issue"
-  echo "Transcode Needed:     $transcode"
+  echo "No Issues:           $no_issues"
+  echo "Codec Issues:        $codec_issues"
+  echo "Subtitle Issues:     $subtitle_issues"
+  echo "Both Issue Types:    $both_issues"
   echo "Skipped (unreadable): $skipped"
 
   if [[ -s "$DIFF_RESULT" ]]; then
