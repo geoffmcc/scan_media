@@ -56,7 +56,7 @@ Results are cached in a `.cache` file alongside the CSV report. Each entry store
 
 - Files whose mtime hasn't changed are pulled from the cache and skipped by workers
 - Files that previously errored (unreadable) are also cached so they aren't retried
-- When all files are up to date, cached results are reused to regenerate reports and print the summary
+- When all files are up to date and the requested reports already exist, cached results are reused for the summary and the report files are left unchanged
 - The cache includes a config header; if subtitle checking is toggled with `--no-check-subtitles`, the cache is invalidated and a full re-scan runs
 - Delete the `.cache` file to force a full re-scan
 
