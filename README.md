@@ -14,6 +14,7 @@ Scans a media library directory, inspects every video file with `ffprobe`, and r
 |---|---|
 | `--format FMT` | Output format: `csv`, `html`, `both` (default: `both`) |
 | `--output FILE` | Basename stem (e.g. `--output report` → `report.csv` + `report.html`) |
+| `--file-list FILE` | Incremental mode: scan only listed paths and merge them into the existing cache/report |
 | `--no-check-subtitles` | Skip subtitle stream compatibility checks for a codec-only scan. Subtitle checks are on by default. |
 | `--jobs N` | Parallel ffprobe workers (default: CPU count) |
 | `--exts "e1,e2,..."` | Override default extension list |
@@ -31,6 +32,9 @@ Scans a media library directory, inspects every video file with `ffprobe`, and r
 
 # CSV only
 ./scan_transcode.sh /mnt/media --format csv
+
+# Incrementally rescan changed files listed in changed-files.txt
+./scan_transcode.sh /mnt/media --format both --output ~/media_report --file-list changed-files.txt
 ```
 
 ## Architecture
@@ -57,6 +61,7 @@ Results are cached in a `.cache` file alongside the CSV report. Each entry store
 - Files whose mtime hasn't changed are pulled from the cache and skipped by workers
 - Files that previously errored (unreadable) are also cached so they aren't retried
 - When all files are up to date and the requested reports already exist, cached results are reused for the summary and the report files are left unchanged
+- `--file-list` skips the full directory walk, rescans only the listed media paths, removes missing listed paths from the cache, and regenerates reports from the merged cache
 - The cache includes a config header; if subtitle checking is toggled with `--no-check-subtitles`, the cache is invalidated and a full re-scan runs
 - Delete the `.cache` file to force a full re-scan
 
@@ -105,6 +110,10 @@ A `case` statement on `$FORMAT` calls the appropriate generation functions:
 - `ffprobe` (from FFmpeg)
 - `jq`
 - Standard POSIX tools: `find`, `xargs`, `grep`, `sort`, `realpath`, `sed`
+
+## Watcher Prototype
+
+The `watch_media/` directory contains a prototype local-pull workflow for server-side file watching. It is intended as an accelerator for known changes, not a replacement for periodic full scans. See `watch_media/README.md`.
 
 ## Design Notes
 

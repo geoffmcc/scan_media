@@ -1,0 +1,19 @@
+# Copy to watch_media.conf and edit locally. Do not commit real server values.
+
+# Path as seen by the Jellyfin server.
+REMOTE_MEDIA_ROOT="/media/Media/Video"
+
+# Path as seen by local WSL when scanning from this workstation.
+LOCAL_MEDIA_ROOT="/mnt/media/Video"
+
+# SSH target for the Jellyfin server. Use a hostname/user that works from WSL.
+REMOTE_SSH="user@jellyfin-server"
+
+# Queue path on the Jellyfin server. The watcher appends here; pull_queue.sh drains it.
+REMOTE_QUEUE="/var/lib/scan_media/changed-files.queue"
+
+# Local scanner/report settings.
+SCANNER="/path/to/scan_transcode.sh"
+REPORT_STEM="/path/to/media_report"
+FORMAT="both"
+JOBS="8"
