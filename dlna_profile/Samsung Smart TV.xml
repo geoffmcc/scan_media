@@ -91,12 +91,13 @@
       </Conditions>
       <ApplyConditions />
     </CodecProfile>
+    <!-- USB testing confirmed 1080p HEVC works on this Samsung TV. Keep DLNA HEVC conservative until 4K HEVC is verified. -->
     <CodecProfile type="Video" codec="hevc,h265">
       <Conditions>
-        <ProfileCondition condition="LessThanEqual" property="Width" value="3840" isRequired="true" />
-        <ProfileCondition condition="LessThanEqual" property="Height" value="2160" isRequired="true" />
+        <ProfileCondition condition="LessThanEqual" property="Width" value="1920" isRequired="true" />
+        <ProfileCondition condition="LessThanEqual" property="Height" value="1080" isRequired="true" />
         <ProfileCondition condition="LessThanEqual" property="VideoFramerate" value="60" isRequired="true" />
-        <ProfileCondition condition="LessThanEqual" property="VideoBitrate" value="100000000" isRequired="true" />
+        <ProfileCondition condition="LessThanEqual" property="VideoBitrate" value="40000000" isRequired="true" />
       </Conditions>
       <ApplyConditions />
     </CodecProfile>
