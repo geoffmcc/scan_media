@@ -34,7 +34,7 @@ From WSL/Linux, run from the repository root:
 ./deploy_watch_media.sh --host your-jellyfin-lan-ip
 ```
 
-The script prompts for an initial SSH user with sudo access. SSH will prompt for that user's password. The bootstrap then creates the low-privilege watcher user and installs the service.
+The script prompts for an initial SSH user with sudo access. SSH will prompt for that user's password. The bootstrap then creates the low-privilege watcher user and installs the service. By default it deploys the current local branch; pass `--ref main` or another branch/tag to override.
 
 PowerShell is also supported:
 
@@ -47,6 +47,8 @@ The deploy script uses this repo URL order:
 1. explicit `--repo-url` / `-RepoUrl`
 2. `git remote get-url origin`
 3. the script's built-in upstream fallback
+
+The deploy ref uses the current local branch unless `--ref` / `-Ref` is passed.
 
 ## Local Puller
 

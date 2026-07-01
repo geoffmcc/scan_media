@@ -3,6 +3,7 @@ param(
   [string]$HostName = "",
   [string]$InitialUser = "",
   [string]$RepoUrl = "",
+  [string]$Ref = "",
   [string]$RuntimeUser = "scanmedia",
   [string]$ReadonlyGroup = "scanmedia_ro",
   [string]$RemoteMediaMount = "/media/Media",
@@ -24,6 +25,9 @@ if (-not (Test-Path $Bootstrap)) { throw "Bootstrap not found: $Bootstrap" }
 if (-not $RepoUrl) {
   $RepoUrl = (& git -C $ProjectDir remote get-url origin 2>$null)
   if (-not $RepoUrl) { $RepoUrl = "https://github.com/geoffmcc/scan_media.git" }
+}
+if (-not $Ref) {
+  $Ref = (& git -C $ProjectDir branch --show-current 2>$null)
 }
 
 if (-not $SshKey) { $SshKey = Join-Path $env:USERPROFILE ".ssh\scan_media_watcher" }
@@ -48,6 +52,7 @@ try {
   $remoteArgs = @(
     "sudo", "bash", "/tmp/scan_media_bootstrap_server.sh", "--yes",
     "--repo-url", $RepoUrl,
+    "--ref", $Ref,
     "--runtime-user", $RuntimeUser,
     "--readonly-group", $ReadonlyGroup,
     "--remote-media-mount", $RemoteMediaMount,

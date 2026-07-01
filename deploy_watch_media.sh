@@ -4,6 +4,7 @@ set -euo pipefail
 HOST=""
 INITIAL_USER=""
 REPO_URL=""
+DEPLOY_REF=""
 RUNTIME_USER="scanmedia"
 READONLY_GROUP="scanmedia_ro"
 REMOTE_MEDIA_MOUNT="/media/Media"
@@ -16,6 +17,7 @@ while [[ $# -gt 0 ]]; do
     --host) HOST="$2"; shift 2 ;;
     --initial-user) INITIAL_USER="$2"; shift 2 ;;
     --repo-url) REPO_URL="$2"; shift 2 ;;
+    --ref) DEPLOY_REF="$2"; shift 2 ;;
     --runtime-user) RUNTIME_USER="$2"; shift 2 ;;
     --readonly-group) READONLY_GROUP="$2"; shift 2 ;;
     --remote-media-mount) REMOTE_MEDIA_MOUNT="$2"; shift 2 ;;
@@ -41,6 +43,10 @@ if [[ -z "$REPO_URL" ]]; then
 fi
 [[ -n "$REPO_URL" ]] || REPO_URL="https://github.com/geoffmcc/scan_media.git"
 
+if [[ -z "$DEPLOY_REF" ]]; then
+  DEPLOY_REF="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)"
+fi
+
 case "$HOST" in (*[!A-Za-z0-9._:-]*|"") die "Unsafe host: $HOST" ;; esac
 case "$INITIAL_USER" in (*[!A-Za-z0-9._-]*|"") die "Unsafe initial user: $INITIAL_USER" ;; esac
 
@@ -61,6 +67,7 @@ scp -o ControlPath="$CONTROL_PATH" "$BOOTSTRAP" "$INITIAL_USER@$HOST:/tmp/scan_m
 
 REMOTE_CMD=(sudo bash /tmp/scan_media_bootstrap_server.sh --yes
   --repo-url "$REPO_URL"
+  --ref "$DEPLOY_REF"
   --runtime-user "$RUNTIME_USER"
   --readonly-group "$READONLY_GROUP"
   --remote-media-mount "$REMOTE_MEDIA_MOUNT"

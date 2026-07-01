@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/geoffmcc/scan_media.git"
+DEPLOY_REF=""
 RUNTIME_USER="scanmedia"
 READONLY_GROUP="scanmedia_ro"
 REMOTE_MEDIA_MOUNT="/media/Media"
@@ -16,6 +17,7 @@ YES=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo-url) REPO_URL="$2"; shift 2 ;;
+    --ref) DEPLOY_REF="$2"; shift 2 ;;
     --runtime-user) RUNTIME_USER="$2"; shift 2 ;;
     --readonly-group) READONLY_GROUP="$2"; shift 2 ;;
     --remote-media-mount) REMOTE_MEDIA_MOUNT="$2"; shift 2 ;;
@@ -36,6 +38,7 @@ die() { echo "[bootstrap] ERROR: $*" >&2; exit 1; }
 case "$RUNTIME_USER" in (*[!A-Za-z0-9_-]*|"") die "Unsafe runtime user: $RUNTIME_USER" ;; esac
 case "$READONLY_GROUP" in (*[!A-Za-z0-9_-]*|"") die "Unsafe group name: $READONLY_GROUP" ;; esac
 case "$REPO_URL" in http://*|https://*|git@*) ;; *) die "Unsupported repo URL: $REPO_URL" ;; esac
+case "$DEPLOY_REF" in (*[!A-Za-z0-9._/@-]*|*/../*|../*|"") [[ -z "$DEPLOY_REF" ]] || die "Unsafe deploy ref: $DEPLOY_REF" ;; esac
 
 canonical_path() { realpath -m "$1"; }
 is_under_path() {
@@ -70,6 +73,7 @@ is_under_path "$STATE_DIR" "$REMOTE_MEDIA_ROOT" && die "STATE_DIR must not be in
 if [[ "$YES" != true ]]; then
   echo "This will install scan_media watcher outside the media root."
   echo "  repo:        $REPO_URL"
+  [[ -n "$DEPLOY_REF" ]] && echo "  ref:         $DEPLOY_REF"
   echo "  install:     $INSTALL_DIR"
   echo "  config:      $CONFIG_DIR/server.env"
   echo "  queue:       $REMOTE_QUEUE"
@@ -144,10 +148,22 @@ chmod 640 "$REMOTE_QUEUE"
 
 log "Cloning/updating repository"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
+  git -C "$INSTALL_DIR" fetch --prune origin
+  if [[ -n "$DEPLOY_REF" ]]; then
+    if git -C "$INSTALL_DIR" rev-parse --verify --quiet "origin/$DEPLOY_REF" >/dev/null; then
+      git -C "$INSTALL_DIR" checkout -B "$DEPLOY_REF" "origin/$DEPLOY_REF"
+    else
+      git -C "$INSTALL_DIR" checkout "$DEPLOY_REF"
+    fi
+  fi
   git -C "$INSTALL_DIR" pull --ff-only
 else
   rm -rf "$INSTALL_DIR"
-  git clone "$REPO_URL" "$INSTALL_DIR"
+  if [[ -n "$DEPLOY_REF" ]]; then
+    git clone --branch "$DEPLOY_REF" "$REPO_URL" "$INSTALL_DIR"
+  else
+    git clone "$REPO_URL" "$INSTALL_DIR"
+  fi
 fi
 chown -R root:root "$INSTALL_DIR"
 find "$INSTALL_DIR" -type d -exec chmod 755 {} +
