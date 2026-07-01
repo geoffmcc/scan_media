@@ -8,6 +8,7 @@ CONFIG="${1:-$SCRIPT_DIR/local.env}"
 source "$CONFIG"
 
 REMOTE_SSH="${REMOTE_SSH:?REMOTE_SSH is required}"
+SSH_OPTS="${SSH_OPTS:-}"
 REMOTE_QUEUE="${REMOTE_QUEUE:?REMOTE_QUEUE is required}"
 REMOTE_MEDIA_ROOT="${REMOTE_MEDIA_ROOT:?REMOTE_MEDIA_ROOT is required}"
 LOCAL_MEDIA_ROOT="${LOCAL_MEDIA_ROOT:?LOCAL_MEDIA_ROOT is required}"
@@ -49,6 +50,11 @@ require_absolute_path REPORT_STEM "$REPORT_STEM"
 require_safe_remote_path REMOTE_MEDIA_ROOT "$REMOTE_MEDIA_ROOT"
 require_safe_remote_path REMOTE_QUEUE "$REMOTE_QUEUE"
 
+SSH_ARGS=()
+if [[ -n "$SSH_OPTS" ]]; then
+  read -r -a SSH_ARGS <<< "$SSH_OPTS"
+fi
+
 command -v ssh >/dev/null 2>&1 || die "ssh not found"
 command -v flock >/dev/null 2>&1 || die "flock not found"
 [[ -x "$SCANNER" || -f "$SCANNER" ]] || die "Scanner not found: $SCANNER"
@@ -73,7 +79,7 @@ trap 'rm -f "$remote_paths" "$local_paths"' EXIT
 (
   flock -n 9 || die "Another pull_queue.sh run is already active"
 
-  ssh "$REMOTE_SSH" 'bash -s' -- "$REMOTE_QUEUE" <<'REMOTE_DRAIN' > "$remote_paths"
+  ssh "${SSH_ARGS[@]}" "$REMOTE_SSH" 'bash -s' -- "$REMOTE_QUEUE" <<'REMOTE_DRAIN' > "$remote_paths"
 set -euo pipefail
 queue="$1"
 case "$queue" in

@@ -66,6 +66,12 @@ Then run from WSL/Linux:
 
 `pull_queue.sh` drains the remote queue over SSH, maps server paths to local paths, and calls `scan_transcode.sh --file-list`.
 
+If the deploy script created a dedicated SSH key, set `SSH_OPTS` in `watch_media/local.env`:
+
+```bash
+SSH_OPTS="-i ~/.ssh/scan_media_watcher -o IdentitiesOnly=yes"
+```
+
 ## Manual ACL Option
 
 If bootstrap says `scanmedia` cannot read the media root, it will print commands like:
