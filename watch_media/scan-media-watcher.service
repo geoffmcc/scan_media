@@ -1,0 +1,27 @@
+[Unit]
+Description=scan_media read-only media watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scanmedia
+Group=scanmedia_ro
+WorkingDirectory=/opt/scan_media
+ExecStart=/opt/scan_media/watch_media/watch_media.sh /etc/scan_media/server.env
+Restart=on-failure
+RestartSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/media/Media/Video
+ReadWritePaths=/var/lib/scan_media
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

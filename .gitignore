@@ -3,3 +3,12 @@
 *.cache
 *.snapshot
 watch_media/*.conf
+.env
+.env.*
+watch_media/.env
+watch_media/.env.*
+watch_media/local.env
+watch_media/local.env.*
+watch_media/server.env
+watch_media/server.env.*
+!watch_media/*.env.example
