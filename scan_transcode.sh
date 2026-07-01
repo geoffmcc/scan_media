@@ -12,7 +12,6 @@ FORMAT="both"
 OUTPUT_STEM=""
 OUTPUT_CSV=""
 OUTPUT_HTML=""
-ONLY_TRANSCODE=false
 CHECK_SUBTITLES=true
 VERBOSE=false
 JOBS=""
@@ -33,7 +32,6 @@ Output:
   --output FILE        Basename stem (e.g. report -> report.csv + report.html)
 
 Filtering:
-  --only-transcode     Show only files with codec/subtitle issues
   --no-check-subtitles Skip subtitle stream compatibility checks
 
 Performance:
@@ -52,7 +50,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --format)           FORMAT="$2"; shift 2 ;;
     --output)           OUTPUT_STEM="$2"; shift 2 ;;
-    --only-transcode)   ONLY_TRANSCODE=true; shift ;;
     --check-subtitles)  CHECK_SUBTITLES=true; shift ;;
     --no-check-subtitles) CHECK_SUBTITLES=false; shift ;;
     --verbose)          VERBOSE=true; shift ;;
@@ -275,7 +272,6 @@ if [[ $to_scan -gt 0 ]]; then
   fi
 else
   echo "All files up to date in cache."
-  exit 0
 fi
 
 total=$(wc -l < "$RESULTS")
@@ -510,79 +506,6 @@ generate_html() {
 
 # ?????? Console output ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 generate_console() {
-  # ANSI colors for terminal output
-  local green="" yellow="" red="" reset=""
-  if [[ -t 1 ]]; then
-    green="\\033[32m"
-    yellow="\\033[33m"
-    red="\\033[31m"
-    reset="\\033[0m"
-  fi
-
-  # Auto-size columns based on data
-  local w=()
-  local headers=("File" "Container" "Video" "Audio" "Subtitles" "Verdict")
-  for ((i=0; i<6; i++)); do w[i]=${#headers[i]}; done
-  local file_cap=60
-  while IFS='|' read -r p c v a s ver _ _; do
-    (( ${#p} > w[0] && ${#p} <= file_cap )) && w[0]=${#p}
-    (( ${#c} > w[1] )) && w[1]=${#c}
-    (( ${#v} > w[2] )) && w[2]=${#v}
-    (( ${#a} > w[3] )) && w[3]=${#a}
-    (( ${#s} > w[4] )) && w[4]=${#s}
-    (( ${#ver} > w[5] )) && w[5]=${#ver}
-  done < "$RESULTS"
-  local trunc_limit=$((w[0] - 3))
-  [[ trunc_limit -lt 0 ]] && trunc_limit=0
-
-  # Format string for header (6 fields) and data rows (5 fields, verdict separate)
-  local fmt_full="" fmt_data=""
-  for ((i=0; i<6; i++)); do
-    fmt_full+="%-${w[i]}s"
-    [[ $i -lt 5 ]] && fmt_full+=" "
-  done
-  fmt_full+="\n"
-  for ((i=0; i<5; i++)); do
-    fmt_data+="%-${w[i]}s"
-    [[ $i -lt 4 ]] && fmt_data+=" "
-  done
-  fmt_data+=" "
-
-  local total_width=$(( w[0] + w[1] + w[2] + w[3] + w[4] + w[5] + 5 ))
-
-  printf "$fmt_full" "${headers[@]}"
-  printf "%*s\n" "$total_width" "" | tr ' ' '???'
-
-  local hide_direct=false
-  $ONLY_TRANSCODE && hide_direct=true
-
-  while IFS='|' read -r p c v a s ver issue_type reason; do
-    $hide_direct && [[ "$issue_type" == "none" ]] && continue
-
-    local display_path="$p"
-    if [[ ${#display_path} -gt ${w[0]} ]]; then
-      display_path="???${display_path: -$trunc_limit}"
-    fi
-
-    local ver_color=""
-    [[ "$issue_type" == "none" ]] && ver_color="$green"
-    [[ "$issue_type" == "subtitle" ]] && ver_color="$yellow"
-    [[ "$issue_type" == "codec" || "$issue_type" == "codec,subtitle" ]] && ver_color="$red"
-
-    printf "$fmt_data" "$display_path" "$c" "$v" "$a" "$s"
-    printf "${ver_color}%-${w[5]}s${reset}\n" "$ver"
-
-    if [[ -n "$reason" ]]; then
-      while IFS=';' read -ra R; do
-        for r in "${R[@]}"; do
-          r="${r#"${r%%[! ]*}"}"
-          [[ -n "$r" ]] && printf "  ?????? %s\n" "$r"
-        done
-      done <<< "$reason"
-    fi
-  done < "$RESULTS"
-
-  echo ""
   echo "=== Summary ==="
   echo "Total files scanned:   $total"
   echo "No Issues:           $no_issues"

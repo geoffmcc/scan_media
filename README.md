@@ -14,7 +14,6 @@ Scans a media library directory, inspects every video file with `ffprobe`, and r
 |---|---|
 | `--format FMT` | Output format: `csv`, `html`, `both` (default: `both`) |
 | `--output FILE` | Basename stem (e.g. `--output report` → `report.csv` + `report.html`) |
-| `--only-transcode` | Show only files with codec/subtitle issues in the console table. Does not affect the HTML checkboxes or CSV — full data is always written to both reports. |
 | `--no-check-subtitles` | Skip subtitle stream compatibility checks for a codec-only scan. Subtitle checks are on by default. |
 | `--jobs N` | Parallel ffprobe workers (default: CPU count) |
 | `--exts "e1,e2,..."` | Override default extension list |
@@ -30,8 +29,8 @@ Scans a media library directory, inspects every video file with `ffprobe`, and r
 # HTML report only, custom filename stem
 ./scan_transcode.sh /mnt/media --format html --output ~/media_report
 
-# CSV only, issue-only console filter
-./scan_transcode.sh /mnt/media --format csv --only-transcode
+# CSV only
+./scan_transcode.sh /mnt/media --format csv
 ```
 
 ## Architecture
@@ -57,7 +56,7 @@ Results are cached in a `.cache` file alongside the CSV report. Each entry store
 
 - Files whose mtime hasn't changed are pulled from the cache and skipped by workers
 - Files that previously errored (unreadable) are also cached so they aren't retried
-- When all files are up to date, the script exits immediately with no report regeneration
+- When all files are up to date, cached results are reused to regenerate reports and print the summary
 - The cache includes a config header; if subtitle checking is toggled with `--no-check-subtitles`, the cache is invalidated and a full re-scan runs
 - Delete the `.cache` file to force a full re-scan
 
@@ -80,7 +79,7 @@ For each file, `ffprobe` is called once with JSON output containing format info 
 
 ### 6. Output
 
-**Console** (always unless `--format html`): formatted table with file path, container, video codec, audio codec, subtitle codec, and verdict. Transcode reasons are indented under each file. `--only-transcode` filters to just problematic files. Unreadable files are listed in a separate Skipped Files section at the bottom.
+**Console** (always unless `--format html`): summary-only status output with total files, no issues, codec issues, subtitle issues, both issue types, unreadable files, and changes since the previous run. File-level details are intentionally kept in the HTML and CSV reports.
 
 **CSV** (if format includes `csv`): machine-readable with columns `path,container,video_codec,audio_codec,subtitle_codec,verdict,issue_type,reason`. If files were skipped, a `# Skipped files: N` comment block is appended at the end.
 
@@ -99,7 +98,7 @@ A `case` statement on `$FORMAT` calls the appropriate generation functions:
 
 - `generate_csv` — writes sorted CSV with header
 - `generate_html` — writes single-file HTML with inline styles and JS
-- `generate_console` — writes formatted table to stdout
+- `generate_console` — writes summary and last-run status to stdout
 
 ## Dependencies
 
